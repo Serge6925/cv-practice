@@ -26,10 +26,11 @@ def cli_argument_parser():
     parser.add_argument("--tint", type=float, default=0.4)
     parser.add_argument("--radius", type=float, default=0.75)
     parser.add_argument("--softness", type=float, default=0.2)
-    parser.add_argument("--n-scratches", dest="n_scratches", type=int, default=20)
     parser.add_argument("--noise-level", dest="noise_level", type=float, default=15.0)
     parser.add_argument("--threshold", type=float, default=40.0)
     parser.add_argument("--glow-intensity", dest="glow", type=float, default=1.5)
+    parser.add_argument("--sigma", type=float, default=4.0, help="Glow blur radius")
+    parser.add_argument("--vignette", type=float, default=0.55, help="Vignette intensity")
 
     return parser.parse_args()
 
@@ -48,12 +49,12 @@ def gather_kwargs(args):
         return {"width": args.width, "height": args.height}
         
     params = {
-        "antique": {"intensity": args.intensity},
+        "antique": {"intensity": args.intensity, "vignette": args.vignette},
         "fade": {"strength": args.strength},
         "film": {"grain": args.grain, "tint": args.tint},
         "matte": {"radius": args.radius, "softness": args.softness},
-        "scratches": {"n_scratches": args.n_scratches, "noise_level": args.noise_level},
-        "neon": {"threshold": args.threshold, "glow": args.glow},
+        "scratches": {"noise_level": args.noise_level},
+        "neon": {"threshold": args.threshold, "glow": args.glow, "sigma": args.sigma}
     }
     return params.get(args.filter, {})
 

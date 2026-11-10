@@ -66,33 +66,47 @@ class RGB2GrayScale(ImageFilter):
         return np.clip(gray, 0, 255).astype(np.uint8)
 
 
+
 class Antique(ImageFilter):
-    def __init__(self, intensity=0.85):
+    def __init__(self, intensity=0.85, vignette=0.55):
         self.alpha = max(0.0, min(1.0, float(intensity)))
+        self.vignette = max(0.0, min(1.0, float(vignette)))
 
     def apply_filter(self, image):
         img = image.astype(np.float32)
-        
+
         sepia_mat = np.array([
             [0.131, 0.534, 0.272],
             [0.168, 0.686, 0.349],
             [0.189, 0.769, 0.393]
         ], dtype=np.float32)
-        
+
         sepia_img = img @ sepia_mat.T
-        
+        res = img * (1.0 - self.alpha) + sepia_img * self.alpha
+
         h, w = img.shape[:2]
         y, x = np.ogrid[:h, :w]
-        center_x, center_y = w / 2.0, h / 2.0
-        
-        dist = np.sqrt(((x - center_x) / center_x) ** 2 + ((y - center_y) / center_y) ** 2)
-        mask = np.clip(1.0 - 0.5 * dist, 0.0, 1.0)
-        
+        cx = w / 2.0
+        cy = h / 2.0
+
+        dist = np.sqrt(
+            ((x - cx) / cx) ** 2 +
+            ((y - cy) / cy) ** 2
+        )
+
+        mask = np.clip(
+            1.0 - self.vignette * dist ** 2,
+            0.0,
+            1.0
+        )
+
         if img.ndim == 3:
             mask = mask[..., np.newaxis]
-            
-        res = img * (1.0 - self.alpha) + (sepia_img * mask) * self.alpha
+
+        res = res * mask
+
         return np.clip(res, 0, 255).astype(np.uint8)
+
 
 
 class FadeColor(ImageFilter):
@@ -158,73 +172,125 @@ class Matte(ImageFilter):
 
 
 class ScratchesNoise(ImageFilter):
-    def __init__(self, n_scratches=20, noise_level=15.0):
-        self.count = int(n_scratches)
+    def __init__(self, noise_level=15.0):
+        if noise_level < 0:
+            raise ValueError("Уровень шума не может быть отрицательным")
+
         self.sigma = float(noise_level)
         self.rng = np.random.default_rng()
 
     def apply_filter(self, image):
-        res = image.astype(np.float32)
+        res = image.astype(np.float32).copy()
         h, w = res.shape[:2]
 
-        res += self.rng.normal(0.0, self.sigma, res.shape)
-        
-        scratch_mask = np.zeros((h, w), dtype=np.float32)
+        noise = self.rng.normal(0, self.sigma, res.shape)
+        res += noise
 
-        for _ in range(self.count):
-            start_x = self.rng.integers(0, w)
-            start_y = self.rng.integers(0, h // 4)
-            length = self.rng.integers(h // 2, h)
-            
-            end_x = int(start_x + self.rng.integers(-10, 10))
-            end_y = int(start_y + length)
-            
-            pts = max(abs(end_x - start_x), abs(end_y - start_y), 1)
-            xs = np.linspace(start_x, end_x, pts).round().astype(int)
-            ys = np.linspace(start_y, end_y, pts).round().astype(int)
-            
-            mask = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
-            scratch_mask[ys[mask], xs[mask]] = 1.0
+        dust_mask = self.rng.random((h, w)) < 0.001
 
-        if image.ndim == 3:
-            scratch_mask = scratch_mask[..., np.newaxis]
-            
-        res += scratch_mask * 50.0
+        if res.ndim == 3:
+            dust_mask = dust_mask[..., np.newaxis]
+
+        dust = self.rng.choice([-1, 1], size=(h, w, 1)) * 60
+
+        if res.ndim == 2:
+            dust = dust[:, :, 0]
+            dust_mask = dust_mask[:, :, 0]
+
+        res += dust_mask * dust
+
         return np.clip(res, 0, 255).astype(np.uint8)
 
-
 class Neon(ImageFilter):
-    def __init__(self, threshold=40, glow=1.5):
+    def __init__(self, threshold=40, glow=1.5, sigma=4.0):
         self.thr = float(threshold)
         self.glow = float(glow)
+        self.sigma = float(sigma)
+
+        if self.thr < 0:
+            raise ValueError("Порог не может быть отрицательным")
+        if self.glow < 0:
+            raise ValueError("Интенсивность свечения не может быть отрицательной")
+        if self.sigma <= 0:
+            raise ValueError("Sigma должна быть положительной")
+
+    def gaussian_blur(self, image):
+        radius = max(1, int(3 * self.sigma))
+        x = np.arange(-radius, radius + 1)
+
+        kernel = np.exp(-(x ** 2) / (2 * self.sigma ** 2))
+        kernel /= kernel.sum()
+
+        padded = np.pad(
+            image,
+            ((0, 0), (radius, radius), (0, 0)),
+            mode="edge"
+        )
+
+        blurred = np.zeros_like(image, dtype=np.float32)
+
+        for i, weight in enumerate(kernel):
+            blurred += weight * padded[:, i:i + image.shape[1], :]
+
+        padded = np.pad(
+            blurred,
+            ((radius, radius), (0, 0), (0, 0)),
+            mode="edge"
+        )
+
+        result = np.zeros_like(image, dtype=np.float32)
+
+        for i, weight in enumerate(kernel):
+            result += weight * padded[i:i + image.shape[0], :, :]
+
+        return result
 
     def apply_filter(self, image):
         img = image.astype(np.float32)
-        
+
         weights = np.array([0.114, 0.587, 0.299], dtype=np.float32)
         gray = img @ weights
-        
-        padded = np.pad(gray, 1, mode='edge')
-        
-        gx = (padded[:-2, 2:] + 2 * padded[1:-1, 2:] + padded[2:, 2:]) - \
-             (padded[:-2, :-2] + 2 * padded[1:-1, :-2] + padded[2:, :-2])
-             
-        gy = (padded[2:, :-2] + 2 * padded[2:, 1:-1] + padded[2:, 2:]) - \
-             (padded[:-2, :-2] + 2 * padded[:-2, 1:-1] + padded[:-2, 2:])
 
-        mag = np.sqrt(gx ** 2 + gy ** 2)
-        mag = np.clip(mag * self.glow, 0, 255)
-        
-        edges = (mag > self.thr).astype(np.float32)
-        
-        if img.ndim == 3:
-            glow_layer = np.zeros_like(img)
-            glow_layer[..., 0] = edges * mag * 0.2
-            glow_layer[..., 1] = edges * mag * 0.9
-            glow_layer[..., 2] = edges * mag * 1.0
-            
-            res = img * 0.25 + glow_layer
-        else:
-            res = edges * mag
-            
-        return np.clip(res, 0, 255).astype(np.uint8)
+        padded = np.pad(gray, 1, mode="edge")
+
+        gx = (
+            padded[:-2, 2:] +
+            2 * padded[1:-1, 2:] +
+            padded[2:, 2:]
+        ) - (
+            padded[:-2, :-2] +
+            2 * padded[1:-1, :-2] +
+            padded[2:, :-2]
+        )
+
+        gy = (
+            padded[2:, :-2] +
+            2 * padded[2:, 1:-1] +
+            padded[2:, 2:]
+        ) - (
+            padded[:-2, :-2] +
+            2 * padded[:-2, 1:-1] +
+            padded[:-2, 2:]
+        )
+
+        magnitude = np.sqrt(gx ** 2 + gy ** 2)
+
+        edges = (magnitude > self.thr).astype(np.float32)
+
+        contours = np.zeros_like(img)
+
+        contours[..., 0] = edges * 255
+        contours[..., 1] = edges * 80
+        contours[..., 2] = edges * 255
+
+        glow_layer = self.gaussian_blur(contours)
+
+        background = img * 0.2
+
+        result = (
+            background +
+            glow_layer * self.glow +
+            contours * 0.9
+        )
+
+        return np.clip(result, 0, 255).astype(np.uint8)
